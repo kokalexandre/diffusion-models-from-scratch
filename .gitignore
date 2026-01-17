@@ -9,16 +9,17 @@ __pycache__/
 # ------------------------------
 # Project-specific (DDPM/DDIM + SLURM)
 # ------------------------------
-# Data / artifacts
-data/
-datasets/
-checkpoints/
-samples/
-results/
-runs/
-logs/
-outputs/
-artifacts/
+# Data / artifacts (ROOT ONLY)
+#/data is the dataset folder at repo root, not src/data
+/data/
+/datasets/
+/checkpoints/
+/samples/
+/results/
+/runs/
+/logs/
+/outputs/
+/artifacts/
 
 # SLURM outputs
 slurm-*.out
