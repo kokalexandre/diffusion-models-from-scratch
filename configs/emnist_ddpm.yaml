@@ -1,0 +1,41 @@
+seed: 0
+
+data:
+  root: ./data
+  split: balanced         
+  download: false     
+  batch_size: 64
+  num_workers: 4
+  pin_memory: true
+
+model:
+  in_channels: 1
+  out_channels: 1
+  base_channels: 64
+  channel_mults: [1, 2, 4]     # 28x28 -> 14x14 -> 7x7
+  num_res_blocks: 2
+  dropout: 0.0
+  time_emb_dim: 256
+
+diffusion:
+  timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+
+training:
+  epochs: 50
+  lr: 0.0002
+  weight_decay: 0.0
+  grad_clip: 1.0
+  amp: true
+  ema_decay: 0.999
+  log_dir: runs/emnist_ddpm
+  ckpt_dir: checkpoints/emnist_ddpm
+  save_every_epochs: 1
+  sample_every_epochs: 1
+
+sampling:
+  num_samples: 64
+  batch_size: 64
+  use_ema: true
+  save_dir: samples/emnist_ddpm
