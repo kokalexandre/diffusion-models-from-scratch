@@ -1,1 +1,1 @@
-# diffusion-models-from-scratch
+# Diffusion models from scratch
