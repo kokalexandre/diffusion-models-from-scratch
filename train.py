@@ -1,7 +1,12 @@
 import argparse
 import os
 import time
+import csv
 from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")  
+import matplotlib.pyplot as plt
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -38,6 +43,46 @@ def load_checkpoint(path, model, optimizer=None, ema: EMA | None = None, map_loc
     return start_epoch, ckpt.get("cfg", None)
 
 
+def _load_epoch_loss_csv(path: Path) -> list[tuple[int, int, float]]:
+    if not path.exists():
+        return []
+    out: list[tuple[int, int, float]] = []
+    try:
+        with open(path, "r", newline="") as f:
+            r = csv.DictReader(f)
+            for row in r:
+                out.append((int(row["epoch"]), int(row["global_step"]), float(row["loss"])))
+    except Exception:
+        return []
+    return out
+
+
+def _write_epoch_loss_csv(path: Path, rows: list[tuple[int, int, float]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["epoch", "global_step", "loss"])
+        w.writeheader()
+        for e, gs, l in rows:
+            w.writerow({"epoch": e, "global_step": gs, "loss": l})
+
+
+def _save_loss_plot(path_png: Path, rows: list[tuple[int, int, float]]) -> None:
+    if not rows:
+        return
+    epochs = [e for e, _, _ in rows]
+    losses = [l for _, _, l in rows]
+
+    plt.figure()
+    plt.plot(epochs, losses)
+    plt.xlabel("Epoch")
+    plt.ylabel("Train loss (MSE sur le bruit)")
+    plt.grid(True)
+    plt.tight_layout()
+    path_png.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(path_png, dpi=150)
+    plt.close()
+
+
 @torch.no_grad()
 def run_sampling(diffusion: DDPM, model: torch.nn.Module, cfg, device, epoch: int):
     save_dir = Path(cfg["sampling"]["save_dir"])
@@ -69,7 +114,6 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Data
     loader = make_emnist_loader(
         root=cfg["data"]["root"],
         split=cfg["data"]["split"],
@@ -79,7 +123,6 @@ def main():
         download=bool(cfg["data"]["download"]),
     )
 
-    # Model
     model = UNet(
         in_channels=int(cfg["model"]["in_channels"]),
         out_channels=int(cfg["model"]["out_channels"]),
@@ -114,9 +157,15 @@ def main():
 
     writer = SummaryWriter(log_dir=str(log_dir))
 
+    loss_csv_path = log_dir / "loss_epoch.csv"
+    loss_png_path = log_dir / "loss_epoch.png"
+
     start_epoch = 0
     if args.resume:
         start_epoch, _ = load_checkpoint(args.resume, model, optimizer=optimizer, ema=ema, map_location=device)
+
+    epoch_loss_rows = _load_epoch_loss_csv(loss_csv_path)
+    epoch_loss_rows = [(e, gs, l) for (e, gs, l) in epoch_loss_rows if e < start_epoch]
 
     epochs = int(cfg["training"]["epochs"])
     grad_clip = float(cfg["training"]["grad_clip"])
@@ -129,6 +178,9 @@ def main():
         t0 = time.time()
         pbar = tqdm(loader, desc=f"epoch {epoch}/{epochs-1}", leave=True)
         running_loss = 0.0
+
+        epoch_loss_sum = 0.0
+        epoch_batches = 0
 
         for x, _ in pbar:
             x = x.to(device, non_blocking=True)
@@ -147,7 +199,10 @@ def main():
             if ema is not None:
                 ema.update(model)
 
-            running_loss += float(loss.item())
+            loss_val = float(loss.item())
+            running_loss += loss_val
+            epoch_loss_sum += loss_val
+            epoch_batches += 1
             global_step += 1
 
             if global_step % 50 == 0:
@@ -159,13 +214,17 @@ def main():
         epoch_time = time.time() - t0
         writer.add_scalar("train/epoch_time_sec", epoch_time, epoch)
 
-        # Save
+        epoch_avg_loss = epoch_loss_sum / max(1, epoch_batches)
+        writer.add_scalar("train/epoch_loss", epoch_avg_loss, epoch)
+
+        epoch_loss_rows.append((epoch, global_step, epoch_avg_loss))
+        _write_epoch_loss_csv(loss_csv_path, epoch_loss_rows)
+        _save_loss_plot(loss_png_path, epoch_loss_rows)
+
         if (epoch + 1) % save_every == 0:
             save_checkpoint(ckpt_dir / f"ddpm_emnist_epoch_{epoch:04d}.pt", model, optimizer, epoch, ema, cfg)
 
-        # Sample
         if (epoch + 1) % sample_every == 0:
-            model_to_sample = model
             if bool(cfg["sampling"]["use_ema"]) and ema is not None:
                 model_to_sample = ema.make_ema_model(model).to(device).eval()
             else:
