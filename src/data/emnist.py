@@ -10,7 +10,6 @@ import torchvision.transforms.functional as TF
 
 
 def _fix_emnist_orientation(img):
-    # torchvision EMNIST est souvent transposé; ce fix donne des glyphes “droits”
     img = TF.rotate(img, -90)
     img = TF.hflip(img)
     return img
