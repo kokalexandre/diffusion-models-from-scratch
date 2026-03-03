@@ -1,0 +1,37 @@
+seed: 0
+
+data:
+  root: ./data
+  split: balanced
+  download: false
+
+  batch_size: 1024
+  num_workers: 8
+  pin_memory: true
+
+  augment: true
+  aug_degrees: 10
+  aug_translate: 0.10
+  aug_scale_min: 0.90
+  aug_scale_max: 1.10
+  aug_shear: 5
+
+model:
+  backbone: emnist_resnet34
+  feature_dim: 512
+  base_width: 96
+
+training:
+  epochs: 30
+  lr: 0.001
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  amp: true
+
+  use_onecycle: true
+  max_lr: 0.003
+  pct_start: 0.1
+
+  log_dir: runs/emnist_classifier
+  ckpt_dir: checkpoints/emnist_classifier
+  save_best: true
