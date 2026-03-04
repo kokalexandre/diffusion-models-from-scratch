@@ -26,8 +26,9 @@ micromamba run -n diffusion python -u tools/eval_emnist_metrics.py \
   --ddpm_ckpt "$DDPM_CKPT" \
   --use_ema \
   --cls_ckpt "$CLS_CKPT" \
-  --num_gen 1000 \
+  --num_gen 5000 \
   --gen_batch 64 \
   --real_splits train,test \
   --real_max 10000 \
+  --real_seed 0 \
   --out runs/emnist_metrics/metrics_epoch_0029.json
