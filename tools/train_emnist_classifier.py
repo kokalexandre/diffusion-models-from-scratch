@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -49,7 +49,7 @@ def _make_transforms(cfg, train: bool):
 
     tfms += [
         transforms.ToTensor(),
-        transforms.Lambda(lambda x: x * 2.0 - 1.0),  # [-1,1]
+        transforms.Lambda(lambda x: x * 2.0 - 1.0),
     ]
     return transforms.Compose(tfms)
 
@@ -59,29 +59,56 @@ def make_loaders(cfg):
     split = cfg["data"]["split"]
     download = bool(cfg["data"]["download"])
 
-    tfm_tr = _make_transforms(cfg, train=True)
-    tfm_te = _make_transforms(cfg, train=False)
+    val_fraction = float(cfg["data"].get("val_fraction", 0.05))
+    val_seed = int(cfg["data"].get("val_seed", 0))
 
-    ds_tr = EMNIST(root=root, split=split, train=True, download=download, transform=tfm_tr)
-    ds_te = EMNIST(root=root, split=split, train=False, download=download, transform=tfm_te)
+    tfm_tr = _make_transforms(cfg, train=True)
+    tfm_eval = _make_transforms(cfg, train=False)
+
+    ds_train_aug = EMNIST(root=root, split=split, train=True, download=download, transform=tfm_tr)
+    ds_train_eval = EMNIST(root=root, split=split, train=True, download=download, transform=tfm_eval)
+
+    n = len(ds_train_aug)
+    n_val = int(round(n * val_fraction))
+    n_val = max(1, min(n_val, n - 1))
+
+    g = torch.Generator()
+    g.manual_seed(val_seed)
+    perm = torch.randperm(n, generator=g).tolist()
+    val_idx = perm[:n_val]
+    train_idx = perm[n_val:]
+
+    tr_ds = Subset(ds_train_aug, train_idx)
+    val_ds = Subset(ds_train_eval, val_idx)
 
     tr = DataLoader(
-        ds_tr,
+        tr_ds,
         batch_size=int(cfg["data"]["batch_size"]),
         shuffle=True,
         num_workers=int(cfg["data"]["num_workers"]),
         pin_memory=bool(cfg["data"]["pin_memory"]),
         drop_last=True,
     )
-    te = DataLoader(
-        ds_te,
+    val = DataLoader(
+        val_ds,
         batch_size=int(cfg["data"]["batch_size"]),
         shuffle=False,
         num_workers=int(cfg["data"]["num_workers"]),
         pin_memory=bool(cfg["data"]["pin_memory"]),
         drop_last=False,
     )
-    return tr, te, ds_tr
+
+    ds_test = EMNIST(root=root, split=split, train=False, download=download, transform=tfm_eval)
+    test = DataLoader(
+        ds_test,
+        batch_size=int(cfg["data"]["batch_size"]),
+        shuffle=False,
+        num_workers=int(cfg["data"]["num_workers"]),
+        pin_memory=bool(cfg["data"]["pin_memory"]),
+        drop_last=False,
+    )
+
+    return tr, val, test, ds_train_aug
 
 
 @torch.no_grad()
@@ -148,7 +175,7 @@ def main():
     if backbone != "emnist_resnet34":
         raise ValueError(f"This script is ResNet-34 only. Got model.backbone={backbone}")
 
-    tr_loader, te_loader, ds_train = make_loaders(cfg)
+    tr_loader, val_loader, test_loader, ds_train = make_loaders(cfg)
     num_classes = len(ds_train.classes)
 
     feature_dim = int(cfg["model"]["feature_dim"])
@@ -229,7 +256,7 @@ def main():
                 writer.add_scalar("train/lr", opt.param_groups[0]["lr"], global_step)
 
         train_loss = train_loss_sum / max(1, train_count)
-        val_loss, val_acc = eval_loss_acc(model, te_loader, device, label_smoothing=0.0)
+        val_loss, val_acc = eval_loss_acc(model, val_loader, device, label_smoothing=0.0)
 
         writer.add_scalar("train/loss_epoch", train_loss, ep)
         writer.add_scalar("val/loss", val_loss, ep)
@@ -247,6 +274,8 @@ def main():
             "feature_dim": feature_dim,
             "base_width": base_width,
             "split": split,
+            "val_fraction": float(cfg["data"].get("val_fraction", 0.05)),
+            "val_seed": int(cfg["data"].get("val_seed", 0)),
         }
 
         if bool(cfg["training"].get("save_best", True)):
@@ -257,6 +286,11 @@ def main():
             torch.save(payload, ckpt_dir / f"emnist_resnet34_epoch_{ep:04d}_{split}.pt")
 
         print(f"[epoch {ep}] train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
+
+    test_loss, test_acc = eval_loss_acc(model, test_loader, device, label_smoothing=0.0)
+    writer.add_scalar("test/loss", test_loss, epochs)
+    writer.add_scalar("test/acc", test_acc, epochs)
+    print(f"[final] test_loss={test_loss:.4f} test_acc={test_acc:.4f}")
 
     writer.close()
 
