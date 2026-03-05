@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from torchvision.datasets import EMNIST
@@ -13,6 +13,7 @@ import torchvision.transforms.functional as TF
 from src.utils import load_yaml, EMA
 from src.models.unet import UNet
 from src.diffusion.ddpm import DDPM
+from src.diffusion.ddim import DDIMSampler
 from src.metrics.backbones import emnist_resnet34
 from src.metrics.stats import StreamingMeanCov, StreamingInceptionScore, frechet_distance
 
@@ -30,7 +31,7 @@ def _make_emnist_loader(
     batch_size: int,
     num_workers: int,
     real_max: int | None,
-    real_seed: int,
+    seed: int,
 ):
     tfm = transforms.Compose([
         transforms.Lambda(_fix_emnist_orientation),
@@ -39,21 +40,13 @@ def _make_emnist_loader(
     ])
     ds = EMNIST(root=root, split=split, train=train, download=False, transform=tfm)
 
-    sampler = None
     if real_max is not None and real_max > 0 and real_max < len(ds):
         g = torch.Generator()
-        g.manual_seed(int(real_seed))
-        sampler = RandomSampler(ds, replacement=False, num_samples=int(real_max), generator=g)
+        g.manual_seed(int(seed))
+        idx = torch.randperm(len(ds), generator=g)[: int(real_max)].tolist()
+        ds = Subset(ds, idx)
 
-    dl = DataLoader(
-        ds,
-        batch_size=batch_size,
-        shuffle=False if sampler is not None else False, 
-        sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     return dl, ds
 
 
@@ -74,19 +67,74 @@ def _extract_real_stats(classifier, loader, device, feature_dim: int):
 
 
 @torch.no_grad()
-def _extract_gen_stats_and_is(diffusion, ddpm_model, classifier, device, num_gen: int, gen_batch: int, feature_dim: int, num_classes: int):
+def _sample_images(
+    *,
+    sampler: str,
+    diffusion: DDPM,
+    ddim: DDIMSampler,
+    model: torch.nn.Module,
+    batch_size: int,
+    device: torch.device,
+    eta: float,
+    ddim_steps: int,
+    ddim_schedule: str,
+):
+    if sampler == "ddpm":
+        return diffusion.sample(model, batch_size=batch_size, device=device)
+
+    if sampler == "ddim":
+        return ddim.sample(
+            model,
+            batch_size=batch_size,
+            device=device,
+            shape=(1, 28, 28),
+            steps=int(ddim_steps),
+            schedule=ddim_schedule,
+            eta=float(eta),
+        )
+
+    raise ValueError(f"Unknown sampler: {sampler}")
+
+
+@torch.no_grad()
+def _extract_gen_stats_and_is(
+    *,
+    sampler: str,
+    diffusion: DDPM,
+    ddim: DDIMSampler,
+    ddpm_model: torch.nn.Module,
+    classifier,
+    device,
+    num_gen: int,
+    gen_batch: int,
+    feature_dim: int,
+    num_classes: int,
+    eta: float,
+    ddim_steps: int,
+    ddim_schedule: str,
+):
     ddpm_model.eval()
     classifier.eval()
 
     stats = StreamingMeanCov(feature_dim)
     is_acc = StreamingInceptionScore(num_classes=num_classes)
 
-    remaining = num_gen
-    pbar = tqdm(total=num_gen, desc="generate+features")
+    remaining = int(num_gen)
+    pbar = tqdm(total=int(num_gen), desc="generate+features")
 
     while remaining > 0:
-        b = min(gen_batch, remaining)
-        imgs = diffusion.sample(ddpm_model, batch_size=b, device=device)  # [-1,1]
+        b = min(int(gen_batch), remaining)
+        imgs = _sample_images(
+            sampler=sampler,
+            diffusion=diffusion,
+            ddim=ddim,
+            model=ddpm_model,
+            batch_size=b,
+            device=device,
+            eta=eta,
+            ddim_steps=ddim_steps,
+            ddim_schedule=ddim_schedule,
+        )
         logits, feat = classifier(imgs, return_features=True)
         stats.update(feat)
         is_acc.update_logits(logits)
@@ -107,17 +155,28 @@ def main():
 
     p.add_argument("--cls_ckpt", type=str, required=True)
 
+    p.add_argument("--sampler", type=str, default="ddim", choices=["ddpm", "ddim"])
+    p.add_argument("--eta", type=float, default=0.0)
+    p.add_argument("--ddim_steps", type=int, default=50)
+    p.add_argument("--ddim_schedule", type=str, default="linear", choices=["linear", "quadratic"])
+
     p.add_argument("--num_gen", type=int, default=5000)
     p.add_argument("--gen_batch", type=int, default=64)
 
-    p.add_argument("--real_splits", type=str, default="train,test", help="comma-separated: train,test or test only")
+    p.add_argument("--real_splits", type=str, default="train,test")
     p.add_argument("--real_batch", type=int, default=512)
     p.add_argument("--real_max", type=int, default=10000)
-
     p.add_argument("--real_seed", type=int, default=0)
+
+    p.add_argument("--gen_seed", type=int, default=-1)
 
     p.add_argument("--out", type=str, default="runs/emnist_metrics/metrics.json")
     args = p.parse_args()
+
+    if int(args.gen_seed) >= 0:
+        torch.manual_seed(int(args.gen_seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(args.gen_seed))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -161,15 +220,22 @@ def main():
     classifier.load_state_dict(cls_blob["model"], strict=True)
     classifier.eval()
 
+    ddim = DDIMSampler(diffusion)
+
     mu_g, cov_g, is_score = _extract_gen_stats_and_is(
+        sampler=args.sampler,
         diffusion=diffusion,
+        ddim=ddim,
         ddpm_model=ddpm_model,
         classifier=classifier,
         device=device,
-        num_gen=int(args.num_gen),
-        gen_batch=int(args.gen_batch),
+        num_gen=args.num_gen,
+        gen_batch=args.gen_batch,
         feature_dim=feature_dim,
         num_classes=num_classes,
+        eta=float(args.eta),
+        ddim_steps=int(args.ddim_steps),
+        ddim_schedule=args.ddim_schedule,
     )
 
     root = cfg["data"]["root"]
@@ -181,17 +247,16 @@ def main():
 
     for s in splits:
         is_train = (s == "train")
-
         split_seed = int(args.real_seed) + (0 if is_train else 1)
 
         real_loader, _ = _make_emnist_loader(
             root=root,
             split=split,
             train=is_train,
-            batch_size=int(args.real_batch),
+            batch_size=args.real_batch,
             num_workers=num_workers,
             real_max=int(args.real_max) if int(args.real_max) > 0 else None,
-            real_seed=split_seed,
+            seed=split_seed,
         )
 
         mu_r, cov_r, n_real = _extract_real_stats(
@@ -206,7 +271,13 @@ def main():
 
     out = {
         "dataset": f"EMNIST/{split}",
+        "sampler": args.sampler,
+        "eta": float(args.eta),
+        "ddim_steps": int(args.ddim_steps),
+        "ddim_schedule": args.ddim_schedule,
         "n_gen": int(args.num_gen),
+        "gen_batch": int(args.gen_batch),
+        "gen_seed": int(args.gen_seed),
         "feature_extractor": "emnist_resnet34",
         "feature_dim": int(feature_dim),
         "inception_score": float(is_score),
