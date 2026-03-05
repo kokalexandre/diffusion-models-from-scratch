@@ -81,6 +81,7 @@ class DDIMSampler:
         steps: int = 50,
         schedule: Literal["linear", "quadratic"] = "linear",
         eta: float = 0.0,
+        clip_denoised: bool = True,
         return_timesteps: bool = False,
     ):
         T = int(self.ddpm.timesteps)
@@ -101,6 +102,10 @@ class DDIMSampler:
             sqrt_1m_a_t = torch.sqrt(torch.clamp(1.0 - a_t, min=0.0))
 
             x0_pred = (x - sqrt_1m_a_t * eps) / torch.clamp(sqrt_a_t, min=1e-12)
+
+            if clip_denoised:
+                x0_pred = x0_pred.clamp(-1.0, 1.0)
+                eps = (x - sqrt_a_t * x0_pred) / torch.clamp(sqrt_1m_a_t, min=1e-12)
 
             if t_prev < 0:
                 x = x0_pred
