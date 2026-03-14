@@ -81,7 +81,7 @@ class DDIMSampler:
         steps: int = 50,
         schedule: Literal["linear", "quadratic"] = "linear",
         eta: float = 0.0,
-        clip_denoised: bool = True,
+        clip_denoised: bool = False,
         return_timesteps: bool = False,
     ):
         T = int(self.ddpm.timesteps)

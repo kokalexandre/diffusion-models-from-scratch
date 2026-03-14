@@ -23,7 +23,7 @@ test -f "$DDPM_CKPT"
 test -f "$CLS_CKPT"
 
 SAMPLER="ddim"
-ETA="0.0"
+ETA="1.0"
 DDIM_STEPS="1000"
 DDIM_SCHEDULE="linear"
 
@@ -33,7 +33,7 @@ REAL_MAX="50000"
 REAL_SEED="0"
 GEN_SEED="0"
 
-OUT="runs/emnist_metrics/${SAMPLER}_T${DDIM_STEPS}_eta${ETA}_epoch_0029_numgen${NUM_GEN}_realmax${REAL_MAX}_realseed${REAL_SEED}_genseed${GEN_SEED}.json"
+OUT="runs/emnist_metrics/${SAMPLER}_S${DDIM_STEPS}_eta${ETA}_epoch_0029_numgen${NUM_GEN}_realmax${REAL_MAX}_realseed${REAL_SEED}_genseed${GEN_SEED}.json"
 
 micromamba run -n diffusion python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 
