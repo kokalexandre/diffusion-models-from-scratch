@@ -1,0 +1,57 @@
+seed: 0
+
+data:
+  root: data
+  batch_size: 128
+  num_workers: 16
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
+  download: true
+  random_flip: true
+
+model:
+  in_channels: 3
+  out_channels: 3
+  base_channels: 128
+  channel_mults: [1, 2, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [16]
+  dropout: 0.1
+  resolution: 32
+
+diffusion:
+  timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  beta_schedule: linear
+  var_type: fixedlarge
+
+training:
+  lr: 0.0002
+  warmup_steps: 5000
+  max_steps: 790000
+  grad_clip: 1.0
+  ema_decay: 0.9999
+
+  mixed_precision: bf16
+  allow_tf32: true
+  cudnn_benchmark: true
+  channels_last: true
+  compile: true
+  compile_mode: default
+  compile_backend: inductor
+
+  log_every_steps: 500
+  save_every_steps: 10000
+
+  ckpt_dir: checkpoints/cifar10_ddpm
+  log_dir: runs/cifar10_ddpm
+
+sampling:
+  save_dir: samples/cifar10_ddpm
+  batch_size: 64
+  num_samples: 64
+  use_ema: true
+  shape: [3, 32, 32]
+  ddim_schedule: quadratic
