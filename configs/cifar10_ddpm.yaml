@@ -30,7 +30,7 @@ diffusion:
 training:
   lr: 0.0002
   warmup_steps: 5000
-  max_steps: 790000
+  max_steps: 800000
   grad_clip: 1.0
   ema_decay: 0.9999
 
